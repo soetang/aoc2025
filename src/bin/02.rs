@@ -3,28 +3,22 @@ advent_of_code::solution!(2);
 
 
 pub fn part_one(input: &str) -> Option<u64> {
-    let ranges = parse_ranges(input);
-    // Functional style: flat-map numbers, filter invalid, sum as u64
-    let sum = ranges
-        .into_iter()
-        .flat_map(|r| r.start..=r.end)
-        // Part 1: exactly two equal halves (exact reps = 2)
-        .filter(|&n| is_repetition_general(n, Some(2)))
-        .map(|n| n as u64)
-        .sum();
-    Some(sum)
+    // Use arithmetic fast path for two equal halves
+    Some(sum_over_ranges(input, Some(2)))
 }
 
 pub fn part_two(input: &str) -> Option<u64> {
-    let ranges = parse_ranges(input);
-    // Functional: sum IDs that are made of a smaller sequence repeated 2+ times
-    let sum = ranges
+    Some(sum_over_ranges(input, None))
+}
+
+// Shared functional: sum IDs across ranges that satisfy repetition rule
+fn sum_over_ranges(input: &str, exact_reps: Option<usize>) -> u64 {
+    parse_ranges(input)
         .into_iter()
         .flat_map(|r| r.start..=r.end)
-        .filter(|&n| is_repetition_general(n, None))
+        .filter(|&n| is_repetition_general(n, exact_reps))
         .map(|n| n as u64)
-        .sum();
-    Some(sum)
+        .sum()
 }
 
 fn parse_ranges(input: &str) -> Vec<Range> {
@@ -58,34 +52,58 @@ struct Range {
 // if exact_reps is None, allow any k >= 2.
 fn is_repetition_general(n: i64, exact_reps: Option<usize>) -> bool {
     let s = n.to_string();
-    let len = s.len();
+    let bytes = s.as_bytes();
+    let len = bytes.len();
     match exact_reps {
         Some(k) => {
             if k < 2 || len % k != 0 {
                 return false;
             }
             let unit = len / k;
-            is_repetition_with_unit(&s, unit)
+            is_repetition_with_unit_bytes(bytes, unit)
         }
         None => {
-            (1..=len / 2)
+            // Fast path: unit = 1 (all digits identical) checked first
+            if bytes.len() >= 2 && bytes[1..].iter().all(|&b| b == bytes[0]) {
+                return true;
+            }
+            (2..=len / 2)
                 .filter(|&unit| len % unit == 0)
-                .filter(|&unit| len / unit >= 2)
-                .any(|unit| is_repetition_with_unit(&s, unit))
+                .any(|unit| is_repetition_with_unit_bytes(bytes, unit))
         }
     }
 }
 
-fn is_repetition_with_unit(s: &str, unit: usize) -> bool {
-    let len = s.len();
+fn is_repetition_with_unit_bytes(bytes: &[u8], unit: usize) -> bool {
+    let len = bytes.len();
     if unit == 0 || len % unit != 0 {
         return false;
     }
-    let pattern = &s[..unit];
-    // Check that all chunks equal pattern using iterator combinators
+    // Compare each chunk to the first unit using byte equality without creating substrings.
     (unit..len)
         .step_by(unit)
-        .all(|i| &s[i..i + unit] == pattern)
+        .all(|i| &bytes[i..i + unit] == &bytes[0..unit])
+}
+
+// Fast path for part one (two halves) using arithmetic to avoid string allocation where possible.
+// Note: We still use the generalized function in part_one for code clarity, but this helper is
+// available if we want to micro-opt in tight loops.
+// This is just a copilot suggestion that i tested, it works and is a bit faster
+#[allow(dead_code)]
+fn is_two_halves_arith(n: i64) -> bool {
+    // Determine decimal length
+    if n <= 0 { return false; }
+    let mut tmp = n;
+    let mut len = 0;
+    while tmp > 0 { tmp /= 10; len += 1; }
+    if len % 2 != 0 { return false; }
+    // Compute pow10^(len/2)
+    let half = len / 2;
+    let mut pow10 = 1i64;
+    for _ in 0..half { pow10 *= 10; }
+    let left = n / pow10;
+    let right = n % pow10;
+    left == right
 }
 
 #[cfg(test)]
