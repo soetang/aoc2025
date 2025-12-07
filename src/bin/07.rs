@@ -1,12 +1,78 @@
 advent_of_code::solution!(7);
 
+pub fn part_one(input: &str) -> Option<u64> {
+    let grid = parse(input);
+    Some(simulate_total_splits(&grid))
+}
+
+pub fn part_two(input: &str) -> Option<u64> {
+    let grid = parse(input);
+    let (start_x, start_y) = grid.start?;
+    let mut ways = vec![0u32; grid.width];
+    ways[start_x] = 1;
+    let mut next = vec![0u32; grid.width];
+
+    for y in start_y..grid.height.saturating_sub(1) {
+        // Compute next row counts into preallocated buffer
+        next.fill(0);
+        step_ways_row(&grid, y, &ways, &mut next);
+        // Early exit if no paths remain
+        if next.iter().all(|&v| v == 0) {
+            ways.clear(); // empty to sum to 0
+            break;
+        }
+        std::mem::swap(&mut ways, &mut next);
+    }
+
+    Some(ways.iter().map(|&v| v as u64).sum())
+}
+
+fn parse(input: &str) -> Grid {
+    // Collect non-empty lines first to determine a consistent width.
+    let lines: Vec<&str> = input
+        .lines()
+        .collect();
+
+    let height = lines.len();
+    let width = lines.first().map(|l| l.len()).unwrap_or(0);
+
+    // If lines are ragged, we choose to treat unknowns as error-resilient open spaces,
+    // but we do NOT pad; instead, we only read within each line's actual length.
+    // For AoC inputs, lines are typically rectangular; if not, indices outside a line are "Open".
+    let mut cells = Vec::with_capacity(width * height);
+    let mut start: Option<(usize, usize)> = None;
+
+    for (y, &line) in lines.iter().enumerate() {
+        for (x, ch) in line.chars().enumerate() {
+            let cell = match ch {
+                '.' => Cell::Open,
+                '^' => Cell::Splitter,
+                'S' => {
+                    start = Some((x, y));
+                    Cell::Start
+                }
+                _ => Cell::Open,
+            };
+            cells.push(cell);
+        }
+        // If this line is shorter than width, fill the remainder with Open to keep a true matrix.
+        if line.len() < width {
+            cells.extend(std::iter::repeat(Cell::Open).take(width - line.len()));
+        }
+    }
+
+    Grid {
+        width,
+        height,
+        cells,
+        start,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Cell {
-    /// '.' open space
     Open,
-    /// '^' splitter
     Splitter,
-    /// 'S' starting point (also treated as open for movement)
     Start,
 }
 
@@ -32,76 +98,34 @@ impl Grid {
     }
 }
 
-fn parse(input: &str) -> Grid {
-    let mut cells = Vec::new();
-    let mut width = 0usize;
-    let mut height = 0usize;
-    let mut start: Option<(usize, usize)> = None;
 
-    for (y, line) in input.lines().enumerate() {
-        // Skip completely empty lines (common in AoC inputs)
-        if line.trim().is_empty() {
-            continue;
-        }
-        height += 1;
-        width = width.max(line.len());
-        for (x, ch) in line.chars().enumerate() {
-            let cell = match ch {
-                '.' => Cell::Open,
-                '^' => Cell::Splitter,
-                'S' => {
-                    start = Some((x, y));
-                    Cell::Start
-                }
-                _ => {
-                    // Treat any unknown char as open to be resilient
-                    Cell::Open
-                }
-            };
-            cells.push(cell);
-        }
-        // If lines are ragged, pad to width with open cells
-        if line.len() < width {
-            cells.extend(std::iter::repeat(Cell::Open).take(width - line.len()));
-        }
-    }
 
-    Grid {
-        width,
-        height,
-        cells,
-        start,
-    }
-}
-
-// Progress beams one row down, returning the next set of beam x-positions and
-// the number of splits that occurred in this step.
+// Progress beams one row down in a functional style, returning next positions and split count.
 fn step_beams_row(
     grid: &Grid,
     y: usize,
-    current_beams: &std::collections::BTreeSet<usize>,
-) -> (std::collections::BTreeSet<usize>, u64) {
-    let mut next_beams: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
-    let mut splits = 0u64;
+    current_beams: &std::collections::HashSet<usize>,
+) -> (std::collections::HashSet<usize>, u32) {
     if y + 1 >= grid.height {
-        return (next_beams, splits);
+        return (std::collections::HashSet::new(), 0);
     }
-    for &x in current_beams {
-        match grid.get(x, y + 1) {
-            Some(Cell::Splitter) => {
-                splits += 1;
-                if x > 0 {
-                    next_beams.insert(x - 1);
+    let (next_vec, splits): (Vec<usize>, u32) = current_beams
+        .iter()
+        .fold((Vec::new(), 0u32), |(mut acc, s), &x| {
+            match grid.get(x, y + 1) {
+                Some(Cell::Splitter) => {
+                    if x > 0 { acc.push(x - 1); }
+                    if x + 1 < grid.width { acc.push(x + 1); }
+                    (acc, s + 1)
                 }
-                if x + 1 < grid.width {
-                    next_beams.insert(x + 1);
+                _ => {
+                    acc.push(x);
+                    (acc, s)
                 }
             }
-            Some(Cell::Open) | Some(Cell::Start) | None => {
-                next_beams.insert(x);
-            }
-        }
-    }
+        });
+
+    let next_beams: std::collections::HashSet<usize> = next_vec.into_iter().collect();
     (next_beams, splits)
 }
 
@@ -111,64 +135,46 @@ fn simulate_total_splits(grid: &Grid) -> u64 {
         Some(s) => s,
         None => return 0,
     };
-    let mut current_beams: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
-    current_beams.insert(start_x);
-    let mut y = start_y;
-    let mut total = 0u64;
-    while y + 1 < grid.height && !current_beams.is_empty() {
-        let (next, splits) = step_beams_row(grid, y, &current_beams);
-        total += splits;
-        current_beams = next;
-        y += 1;
-    }
-    total
+    (start_y..grid.height.saturating_sub(1))
+        .scan(
+            {
+                let mut s = std::collections::HashSet::new();
+                s.insert(start_x);
+                s
+            },
+            |beams, y| {
+                let (next, splits) = step_beams_row(grid, y, beams);
+                *beams = next;
+                Some(splits as u64)
+            },
+        )
+        .sum()
 }
 
 // Dynamic programming one-row step: update ways vector for the next row.
-fn step_ways_row(grid: &Grid, y: usize, ways: &[u64], next: &mut [u64]) {
+fn step_ways_row(grid: &Grid, y: usize, ways: &[u32], next: &mut [u32]) {
     if y + 1 >= grid.height {
         return;
     }
-    for x in 0..grid.width {
-        let count = ways[x];
-        if count == 0 {
-            continue;
-        }
-        match grid.get(x, y + 1) {
+    (0..grid.width)
+        .filter(|&x| ways[x] > 0)
+        .for_each(|x| match grid.get(x, y + 1) {
             Some(Cell::Splitter) => {
+                let cnt = ways[x];
                 if x > 0 {
-                    next[x - 1] = next[x - 1].saturating_add(count);
+                    next[x - 1] = next[x - 1].saturating_add(cnt);
                 }
                 if x + 1 < grid.width {
-                    next[x + 1] = next[x + 1].saturating_add(count);
+                    next[x + 1] = next[x + 1].saturating_add(cnt);
                 }
             }
-            Some(Cell::Open) | Some(Cell::Start) | None => {
-                next[x] = next[x].saturating_add(count);
+            _ => {
+                next[x] = next[x].saturating_add(ways[x]);
             }
-        }
-    }
+        });
 }
 
-pub fn part_one(input: &str) -> Option<u64> {
-    let grid = parse(input);
-    Some(simulate_total_splits(&grid))
-}
 
-pub fn part_two(input: &str) -> Option<u64> {
-    let grid = parse(input);
-    let (start_x, start_y) = grid.start?;
-    let mut ways: Vec<u64> = vec![0; grid.width];
-    ways[start_x] = 1;
-    let mut y = start_y;
-    while y + 1 < grid.height {
-        let mut next: Vec<u64> = vec![0; grid.width];
-        step_ways_row(&grid, y, &ways, &mut next);
-        ways = next;
-        y += 1;
-    }
-    Some(ways.iter().copied().sum())
-}
 
 #[cfg(test)]
 mod tests {
